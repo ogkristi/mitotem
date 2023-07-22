@@ -6,41 +6,34 @@ Analysis of mitochondria in TEM images
 Project Organization
 ------------
 
-    ├── Makefile           <- Makefile with commands like `make data` or `make train`
-    ├── README.md          <- The top-level README for developers using this project.
-    ├── data
-    │   ├── processed      <- The final, canonical data sets for modeling.
-    │   └── raw            <- The original data dump.
-    │
-    ├── docs               <- A default Sphinx project; see sphinx-doc.org for details
-    │
-    ├── models             <- Trained and serialized models, model predictions, or model summaries
-    │
-    ├── notebooks          <- Jupyter notebooks. Naming convention is a number (for ordering),
-    │                         the creator's initials, and a short `-` delimited description, e.g.
-    │                         `1.0-jqp-initial-data-exploration`.
-    │
-    ├── references         <- Data dictionaries, manuals, and all other explanatory materials.
-    │
-    ├── reports            <- Generated analysis as HTML, PDF, LaTeX, etc.
-    │   └── figures        <- Generated graphics and figures to be used in reporting
-    │
-    ├── environment.yml    <- The requirements file for reproducing the analysis environment
-    │
-    ├── setup.py           <- makes project pip installable (pip install -e .) so src can be imported
-    └── src                <- Source code for use in this project.
-        ├── __init__.py    <- Makes src a Python module
-        │
-        ├── data           <- Scripts to download or generate data
-        │   └── make_dataset.py
-        │
-        ├── models         <- Scripts to train models and then use trained models to make
-        │   │                 predictions
-        │   ├── predict_model.py
-        │   └── train_model.py
-        │
-        └── visualization  <- Scripts to create exploratory and results oriented visualizations
-            └── visualize.py
+├── environment.yml    <- The requirements file for reproducing the analysis environment
+├── config             <- Project settings and model parameters
+│   ├── __init__.py
+│   └── settings.py
+├── docs               <- A default Sphinx project; see sphinx-doc.org for details
+├── Makefile           <- Makefile with commands like `make data` or `make train`
+├── models             <- Trained and serialized models, model predictions, or model summaries
+├── notebooks          <- Jupyter notebooks.
+│   ├── 1-unet-debug.ipynb
+│   ├── 2-dataloader-test.ipynb
+│   └── 3-analysis.ipynb
+├── README.md          <- The top-level README for developers using this project.
+├── reports            <- Generated analysis as HTML, PDF, LaTeX, etc.
+│   └── figures        <- Generated graphics and figures to be used in reporting
+├── setup.py           <- makes project pip installable (pip install -e .) so src can be imported
+├── src
+│   ├── __init__.py
+│   ├── analysis       <- Components used in the analysis pipeline
+│   │   └── components.py
+│   ├── data           <- Data access related functionality
+│   │   └── loaders.py
+│   ├── models         <- Scripts to train models and then use trained models to make predictions
+│   │   ├── predict_model.py
+│   │   └── train_model.py
+│   └── visualization  <- Scripts to create exploratory and results oriented visualizations
+│       └── analysis.py
+└── test_environment.py
+
 
 
 --------
