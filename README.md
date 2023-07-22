@@ -5,7 +5,7 @@ Analysis of mitochondria in TEM images
 
 Project Organization
 ------------
-
+```
 ├── environment.yml    <- The requirements file for reproducing the analysis environment
 ├── config             <- Project settings and model parameters
 │   ├── __init__.py
@@ -33,8 +33,7 @@ Project Organization
 │   └── visualization  <- Scripts to create exploratory and results oriented visualizations
 │       └── analysis.py
 └── test_environment.py
-
-
+```
 
 --------
 
