@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 import cv2 as cv
 from config.settings import *
@@ -24,16 +24,10 @@ class MitoSemsegDataset(Dataset):
     def __len__(self) -> int:
         return len(self.images)
     
-def load_data_mitosemseg(batch_size: int = 1, split: int = 85):
-    train = MitoSemsegDataset()
-    val = MitoSemsegDataset()
-
-    trainsize = split*len(train)//100
-    indices = torch.randperm(len(train))
-    train = torch.utils.data.Subset(train, indices[:trainsize])
-    val = torch.utils.data.Subset(val, indices[trainsize:])
-
-    train_iter = DataLoader(train, batch_size, shuffle=True)
-    val_iter = DataLoader(val, batch_size, shuffle=False)
+def load_data_mitosemseg(batch_size: int, num_workers: int, split: float = .85):
+    train, val = random_split(MitoSemsegDataset(), [split, 1-split])
+    
+    train_iter = DataLoader(train, batch_size, shuffle=True, num_workers=num_workers)
+    val_iter = DataLoader(val, batch_size, shuffle=False, num_workers=num_workers)
 
     return train_iter, val_iter

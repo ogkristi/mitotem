@@ -12,7 +12,7 @@ def show_mito_stats(img: np.ndarray, stats: pd.DataFrame) -> None:
     text_thickness = 1
 
     img = cv.cvtColor(img, cv.COLOR_GRAY2RGB)
-    labelimg = 255*np.ones_like(img)
+    labelmask = np.zeros(img.shape[:-1], dtype=np.uint8)
     for _, row in stats.iterrows():
         x, y, w, h = row.bbox
         cv.rectangle(img,(x,y),(x+w,y+h),box_color,box_thickness)
@@ -22,7 +22,8 @@ def show_mito_stats(img: np.ndarray, stats: pd.DataFrame) -> None:
 
         # Draw label in a tight box in the upper left corner of bounding box
         cv.rectangle(img, (x, y-box_thickness//2), (x+w, y+h+baseline), box_color, -1)
-        cv.putText(labelimg, label, (x, y+h), font, text_scale, text_color, text_thickness)
-
-    plt.figure(figsize=(32,16))
-    plt.imshow(np.bitwise_and(img,labelimg))
+        cv.putText(labelmask, label, (x, y+h), font, text_scale, 255, text_thickness)
+    
+    img[labelmask != 0] = text_color
+    plt.figure(figsize=(16,10))
+    plt.imshow(img)
