@@ -1,7 +1,41 @@
-from collections.abc import Callable
+from typing import Callable
 import cv2 as cv
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import easyocr
+
+def detect_scale(img: np.ndarray, reader):
+    hist = cv.calcHist([img], channels=[0], mask=None, histSize=[256], ranges=[0,256]).ravel()
+    
+    if hist[0] > hist[255]: # make sure scalebar is white
+        img = cv.bitwise_not(img)
+    _, bin = cv.threshold(img,254,255,cv.THRESH_BINARY)
+
+    kwidth = bin.shape[1]//8
+    # use wide structuring element to erase everything but scalebar
+    scalebar = open_rc(bin, cv.getStructuringElement(cv.MORPH_RECT,(kwidth,1)))
+    contours, _ = cv.findContours(scalebar, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    bar = contours[0]
+    length = bar[:,:,0].max()-bar[:,:,0].min()+1 # scalebar length in pixels
+
+    # use wide structuring element to merge text as single object
+    dil = cv.dilate(bin, cv.getStructuringElement(cv.MORPH_RECT,(kwidth//2,1)))
+    contours, _ = cv.findContours(dil, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    ctr_biggest = max(contours, key=cv.contourArea)
+    x, y, w, h = cv.boundingRect(ctr_biggest)
+    roi = bin[y:y+h,x:x+w] # rough crop of text
+    roi = cv.resize(roi, None, fx=0.5, fy=0.5, interpolation=cv.INTER_AREA)
+    
+    value, unit, *_ = reader.readtext(roi, detail=0) # character recognition
+
+    if value.isnumeric():
+        if unit == 'um':
+            return float(value)/length, 'micron'
+        elif unit == 'nm':
+            return 0.001*float(value)/length, 'micron'
+
+    return 1., 'pixel'
 
 def get_cristae_mask(mito: np.ndarray, mask: np.ndarray, operations: list[Callable[..., np.ndarray]]):
     img = np.copy(mito)
@@ -33,11 +67,10 @@ def area_filter(img: np.ndarray, threshold: int):
 
     return img
 
-def open_rc(img: np.ndarray, ksize: int, type):
+def open_rc(img: np.ndarray, kernel: np.ndarray):
     binary = True if len(np.unique(img)) == 2 else False
     mask = np.copy(img)
 
-    kernel = cv.getStructuringElement(type,(ksize,ksize))
     marker = cv.erode(img, kernel=kernel)
     marker_old = None
 
@@ -68,6 +101,21 @@ def close_rc(img: np.ndarray, ksize: int, type):
             marker = cv.bitwise_or(marker,mask)
         else:
             marker = np.maximum(marker,mask)
+
+    return marker
+
+def dilate_rc(marker: np.ndarray, mask: np.ndarray):
+    binary = True if len(np.unique(marker)) == 2 else False
+
+    marker_old = None
+    se = cv.getStructuringElement(cv.MORPH_RECT,(3,3))
+    while not np.array_equal(marker, marker_old):
+        marker_old = np.copy(marker)
+        marker = cv.dilate(marker,kernel=se)
+        if binary:
+            marker = cv.bitwise_and(marker,mask)
+        else:
+            marker = np.minimum(marker,mask)
 
     return marker
 
@@ -113,24 +161,30 @@ def prune(img: np.ndarray, n: int):
     
     return np.bitwise_or(ends, thinned)
 
-def fill_holes(img: np.ndarray):
+def holefill(img: np.ndarray):
     binary = True if len(np.unique(img)) == 2 else False
+    
+    if binary:
+        mask = cv.bitwise_not(img)
+        marker = np.copy(mask)
+        marker[1:-1,1:-1] = 0
+    else:
+        mask = img
+        marker = np.copy(img)
+        marker[1:-1,1:-1] = np.max(marker)
 
-    mask = cv.bitwise_not(img)
-    marker = np.copy(mask)
-    marker[1:-1,1:-1] = 0
     marker_old = None
-
     se = cv.getStructuringElement(cv.MORPH_RECT,(3,3))
     while not np.array_equal(marker, marker_old):
         marker_old = np.copy(marker)
-        marker = cv.dilate(marker,kernel=se)
         if binary:
+            marker = cv.dilate(marker,kernel=se)
             marker = cv.bitwise_and(marker,mask)
         else:
-            marker = np.minimum(marker,mask)
+            marker = cv.erode(marker,kernel=se)
+            marker = np.maximum(marker,mask)
 
-    return cv.bitwise_not(marker)
+    return cv.bitwise_not(marker) if binary else marker
 
 def contour_smoothing(src: np.ndarray, p: float):
     contours, _ = cv.findContours(src, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)

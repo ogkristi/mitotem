@@ -24,7 +24,7 @@ class UNet(nn.Module):
     def forward(self, X):
         # H = hidden layer activations
         H = X
-        skip = []
+        skip = [] # LIFO
         
         for enc_block in self.encoder:
             H, S = enc_block(H)
