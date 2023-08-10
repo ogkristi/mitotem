@@ -1,12 +1,11 @@
 import random
 from pathlib import Path
 from random import choice
-from functools import partial
-from typing import Any, Optional, Callable, Tuple
+from typing import Any, Optional, Callable, Tuple, Dict, List
 import torch
-from torch.utils.data import DataLoader, random_split
-import torchvision.transforms as T
-import torchvision.transforms.functional as F
+import torchvision.transforms.v2 as T
+import torchvision.transforms.v2.functional as F
+from torchvision import datapoints
 from torchvision.datasets import VisionDataset
 import cv2 as cv
 import numpy as np
@@ -14,40 +13,9 @@ from config.settings import *
 
 MITOSEM_CLASSES = ['background','mitochondria']
 
-class Compose:
-    def __init__(self, transforms):
-        self.transforms = transforms
-
-    def __call__(self, image, label):
-        for t in self.transforms:
-            image, label = t(image, label)
-        return image, label
-
-class Normalize:
-    def __init__(self):
-        pass
-    def __call__(self, image, label):
-        image = F.normalize(image, mean=[0.6552], std=[0.1531])
-        return image, label
-    
-class ToTensor:
-    def __init__(self):
-        pass
-    def __call__(self, image, label):
-        image = torch.from_numpy(image).unsqueeze(0)
-        label = torch.from_numpy(label).to(torch.long).unsqueeze(0)
-        return image, label # (1, H, W)
-    
-class ConvertImageDtype:
-    def __init__(self, dtype: torch.dtype = torch.float32):
-        self.dtype = dtype
-
-    def __call__(self, image, label):
-        image = F.convert_image_dtype(image, dtype=self.dtype)
-        return image, label
-
-class TrivialAugmentWide:
+class TrivialAugmentWide(T.Transform):
     def __init__(self, bins: int = 31) -> None:
+        super().__init__()
         self.bins = bins
 
         self.aug_space = {
@@ -60,10 +28,10 @@ class TrivialAugmentWide:
             'contrast': F.adjust_contrast,
             'sharpness': F.adjust_sharpness,
             'rotate': F.rotate,
-            'shear_x': lambda x, m, ipol: F.affine(x, 0., [0,0], 1., [0.,m], ipol),
-            'shear_y': lambda x, m, ipol: F.affine(x, 0., [0,0], 1., [m,0.], ipol),
-            'translate_x': lambda x, m, ipol: F.affine(x, 0., [m,0], 1., [0.,0.], ipol),
-            'translate_y': lambda x, m, ipol: F.affine(x, 0., [0,m], 1., [0.,0.], ipol),
+            'shear_x': lambda x, m: F.affine(x, 0., [0,0], 1., [0.,m], F.InterpolationMode.BILINEAR),
+            'shear_y': lambda x, m: F.affine(x, 0., [0,0], 1., [m,0.], F.InterpolationMode.BILINEAR),
+            'translate_x': lambda x, m: F.affine(x, 0., [m,0], 1., [0.,0.], F.InterpolationMode.BILINEAR),
+            'translate_y': lambda x, m: F.affine(x, 0., [0,m], 1., [0.,0.], F.InterpolationMode.BILINEAR),
         }
 
         self.ranges = {
@@ -82,59 +50,72 @@ class TrivialAugmentWide:
             'translate_y': (0, 32),
         }
 
-    def __call__(self, image, label):
-        name, transform = random.choice(list(self.aug_space.items()))
+    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
+        name = random.choice(list(self.aug_space))
         low, up = self.ranges[name]
 
         magnitude = None
         if low != None:
             magnitude = choice(np.linspace(low, up, dtype=type(low)))
 
-        # Only geometric transformations are applied to label image
         if name in ('rotate','shear_x','shear_y','translate_x','translate_y'):
             if random.random() > 0.5:
                 magnitude *= -1
-            image = transform(image, magnitude, F.InterpolationMode.BILINEAR)
-            label = transform(label, magnitude, F.InterpolationMode.NEAREST)
-        else:
-            image = transform(image, magnitude)
 
-        return image, label
+        return dict(transform=name, magnitude=magnitude)
+
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        transform = self.aug_space[params['transform']]
+
+        return transform(inpt, params['magnitude'])
 
 class MitoSemsegDataset(VisionDataset):
     def __init__(self, root: str, transforms: Optional[Callable] = None) -> None:
         imgdir = Path(root) / 'images'
-        labeldir = Path(root) / 'labels'
+        maskdir = Path(root) / 'labels'
         self.images = sorted(imgdir.rglob('*.tif'))
-        self.labels = sorted(labeldir.rglob('*.tif'))
+        self.masks = sorted(maskdir.rglob('*.tif'))
         self.transforms = transforms
     
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
         image = cv.imread(str(self.images[index]), cv.IMREAD_GRAYSCALE)
-        label = cv.imread(str(self.labels[index]), cv.IMREAD_GRAYSCALE)
+        mask = cv.imread(str(self.masks[index]), cv.IMREAD_GRAYSCALE)
 
         # Don't care about instances, set all mitos as class 1
-        _, label = cv.threshold(label,thresh=0,maxval=1,type=cv.THRESH_BINARY)
+        _, mask = cv.threshold(mask,thresh=0,maxval=1,type=cv.THRESH_BINARY)
 
         if self.transforms:
-            image, label = self.transforms(image, label)
+            image, mask = self.transforms(datapoints.Image(image), 
+                                          datapoints.Mask(mask, dtype=torch.long))
 
-        return image, label
+        return image, mask
 
     def __len__(self) -> int:
         return len(self.images)
     
-def load_data_mitosemseg(batch_size: int, num_workers: int, split: float = 0.85):
-    train, val = random_split(MitoSemsegDataset(root=TRAIN_ROOT), [split, 1-split])
-    
-    train_iter = DataLoader(train, batch_size, shuffle=True, num_workers=num_workers)
-    val_iter = DataLoader(val, batch_size, shuffle=False, num_workers=num_workers)
+def load_data_mitosemseg(data_dir: str, split: float = 0.85):
+    tf_train = T.Compose([
+        TrivialAugmentWide(),
+        T.ConvertDtype(torch.float32),
+        T.Normalize(mean=[0.6552], std=[0.1531]),
+        ])
+    tf_val = T.Compose([
+        T.ConvertDtype(torch.float32),
+        T.Normalize(mean=[0.6552], std=[0.1531]),
+        ])
 
-    return train_iter, val_iter
+    train = MitoSemsegDataset(root=data_dir, transforms=tf_train)
+    val = MitoSemsegDataset(root=data_dir, transforms=tf_val)
+    
+    end = int(split*len(train))
+    indices = torch.randperm(len(train)).tolist()
+    train = torch.utils.data.Subset(train, indices[:end])
+    val = torch.utils.data.Subset(val, indices[end:])    
+
+    return train, val
 
 def get_mean_and_std() -> Tuple[float, float]:
-    tf = Compose([ToTensor(), ConvertImageDtype(torch.float32)])
-    dataset = MitoSemsegDataset(root=TRAIN_ROOT, transforms=tf)
+    dataset = MitoSemsegDataset(root=TRAIN_ROOT, transforms=T.ConvertDtype())
 
     pixels_total = 0
     sum_ = torch.zeros(1)
