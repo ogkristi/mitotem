@@ -45,19 +45,21 @@ def get_cristae_mask(mito: np.ndarray, mask: np.ndarray, operations: list[Callab
     
     return img
 
-def bottomhat(src, ksize, type):
-    se = cv.getStructuringElement(type,(ksize,ksize))
-    dst = cv.morphologyEx(src, op=cv.MORPH_BLACKHAT, kernel=se)
+def bottomhat(src, size=None, type=cv.MORPH_ELLIPSE, kernel=None):
+    if kernel is None:
+        kernel = cv.getStructuringElement(type,(size,size))
+
+    dst = cv.morphologyEx(src, op=cv.MORPH_BLACKHAT, kernel=kernel)
     
     return cv.bitwise_not(dst)
 
-def bottomhat_rc(src, ksize, type):
-    dst = close_rc(src, ksize, type) - src
+def bottomhat_rc(src, size=None, type=cv.MORPH_ELLIPSE, kernel=None):
+    dst = close_rc(src, size, type, kernel) - src
 
     return cv.bitwise_not(dst)
 
 def area_filter(img: np.ndarray, threshold: int):
-    cc = cv.connectedComponentsWithStats(img, connectivity=8, ltype=cv.CV_32S)
+    cc = cv.connectedComponentsWithStats(img, connectivity=4, ltype=cv.CV_32S)
     (n, labels, stats, centroids) = cc
     stats_df = pd.DataFrame(stats, columns=['x','y','w','h','area'])
     small = stats_df[stats_df['area'] < threshold].index.to_numpy()
@@ -67,57 +69,64 @@ def area_filter(img: np.ndarray, threshold: int):
 
     return img
 
-def open_rc(img: np.ndarray, kernel: np.ndarray):
-    binary = True if len(np.unique(img)) == 2 else False
-    mask = np.copy(img)
+def open_rc(src, size=None, type=cv.MORPH_ELLIPSE, kernel=None):
+    if kernel is None:
+        kernel = cv.getStructuringElement(type,(size,size))
 
-    marker = cv.erode(img, kernel=kernel)
-    marker_old = None
+    return dilate_rc(marker=cv.erode(src, kernel), mask=src)
 
-    se = cv.getStructuringElement(cv.MORPH_RECT,(3,3))
-    while not np.array_equal(marker, marker_old):
-        marker_old = np.copy(marker)
-        marker = cv.dilate(marker,kernel=se)
-        if binary:
-            marker = cv.bitwise_and(marker,mask)
-        else:
-            marker = np.minimum(marker,mask)
+def close_rc(src, size=None, type=cv.MORPH_ELLIPSE, kernel=None):
+    if kernel is None:
+        kernel = cv.getStructuringElement(type,(size,size))
 
-    return marker
-
-def close_rc(img: np.ndarray, ksize: int, type):
-    binary = True if len(np.unique(img)) == 2 else False
-    mask = np.copy(img)
-
-    kernel = cv.getStructuringElement(type,(ksize,ksize))
-    marker = cv.dilate(img, kernel=kernel)
-    marker_old = None
-
-    se = cv.getStructuringElement(cv.MORPH_RECT,(3,3))
-    while not np.array_equal(marker, marker_old):
-        marker_old = np.copy(marker)
-        marker = cv.erode(marker,kernel=se)
-        if binary:
-            marker = cv.bitwise_or(marker,mask)
-        else:
-            marker = np.maximum(marker,mask)
-
-    return marker
+    return erode_rc(marker=cv.dilate(src, kernel), mask=src)
 
 def dilate_rc(marker: np.ndarray, mask: np.ndarray):
     binary = True if len(np.unique(marker)) == 2 else False
 
     marker_old = None
-    se = cv.getStructuringElement(cv.MORPH_RECT,(3,3))
+    kernel = cv.getStructuringElement(cv.MORPH_RECT,(3,3))
     while not np.array_equal(marker, marker_old):
         marker_old = np.copy(marker)
-        marker = cv.dilate(marker,kernel=se)
+        marker = cv.dilate(marker, kernel)
         if binary:
-            marker = cv.bitwise_and(marker,mask)
+            marker = cv.bitwise_and(marker, mask)
         else:
-            marker = np.minimum(marker,mask)
+            marker = np.minimum(marker, mask)
 
     return marker
+
+def erode_rc(marker: np.ndarray, mask: np.ndarray):
+    binary = True if len(np.unique(marker)) == 2 else False
+
+    marker_old = None
+    kernel = cv.getStructuringElement(cv.MORPH_RECT, (3,3))
+    while not np.array_equal(marker, marker_old):
+        marker_old = np.copy(marker)
+        marker = cv.erode(marker, kernel)
+        if binary:
+            marker = cv.bitwise_or(marker, mask)
+        else:
+            marker = np.maximum(marker, mask)
+
+    return marker
+
+def seq_line_open_rc(src, size):
+    center = (size//2, size//2)
+    eye = np.eye(size, dtype=np.uint8)
+
+    dst = src
+    for angle in np.arange(-45, 45.1, 22.5):
+        rm = cv.getRotationMatrix2D(center, angle, 1.)
+        kernel = cv.warpAffine(eye, rm, (size,size), flags=cv.INTER_LANCZOS4)
+        dst = open_rc(dst, kernel=kernel)
+
+    return dst
+
+def double_threshold(src, upper_narrow, upper_wide):
+    marker = cv.inRange(src, 0, upper_narrow)
+    mask = cv.inRange(src, 0, upper_wide)
+    return dilate_rc(marker, mask)
 
 def close(img: np.ndarray, ksize: int):
     kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE,(ksize,ksize))

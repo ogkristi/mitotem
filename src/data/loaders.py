@@ -32,6 +32,7 @@ class TrivialAugmentWide(T.Transform):
             'shear_y': lambda x, m: F.affine(x, 0., [0,0], 1., [m,0.], F.InterpolationMode.BILINEAR),
             'translate_x': lambda x, m: F.affine(x, 0., [m,0], 1., [0.,0.], F.InterpolationMode.BILINEAR),
             'translate_y': lambda x, m: F.affine(x, 0., [0,m], 1., [0.,0.], F.InterpolationMode.BILINEAR),
+            'elastic': lambda x, m: T.ElasticTransform(m, 30.0)(x),
         }
 
         self.ranges = {
@@ -48,6 +49,7 @@ class TrivialAugmentWide(T.Transform):
             'shear_y': (0., 0.99*45),
             'translate_x': (0, 32),
             'translate_y': (0, 32),
+            'elastic': (0., 1500.),
         }
 
     def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
@@ -93,13 +95,15 @@ class MitoSemsegDataset(VisionDataset):
     def __len__(self) -> int:
         return len(self.images)
     
-def load_data_mitosemseg(data_dir: str, split: float = 0.85):
+def load_data_mitosemseg(data_dir: str, crop_size: int, split: float = 0.85):
     tf_train = T.Compose([
+        T.RandomCrop(crop_size),
         TrivialAugmentWide(),
         T.ConvertDtype(torch.float32),
         T.Normalize(mean=[0.6552], std=[0.1531]),
         ])
     tf_val = T.Compose([
+        T.RandomCrop(crop_size),
         T.ConvertDtype(torch.float32),
         T.Normalize(mean=[0.6552], std=[0.1531]),
         ])
@@ -115,7 +119,9 @@ def load_data_mitosemseg(data_dir: str, split: float = 0.85):
     return train, val
 
 def get_mean_and_std() -> Tuple[float, float]:
-    dataset = MitoSemsegDataset(root=TRAIN_ROOT, transforms=T.ConvertDtype())
+    # Dataset for getting images as float tensors scaled to [0,1]
+    dataset = MitoSemsegDataset(root=TRAIN_ROOT, 
+                                transforms=T.ConvertDtype(torch.float32))
 
     pixels_total = 0
     sum_ = torch.zeros(1)
