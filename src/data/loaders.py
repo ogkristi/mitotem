@@ -144,18 +144,18 @@ def load_data_mitosemseg(data_dir: str, crop_size: int, split: float = 0.85):
             T.RandomCrop(crop_size),
             TrivialAugmentWide(),
             T.ConvertDtype(torch.float32),
-            T.Normalize(mean=[0.6552], std=[0.1531]),
+            T.Normalize(mean=[MEAN], std=[STD]),
         ]
     )
     tf_val = T.Compose(
         [
             T.RandomCrop(crop_size),
             T.ConvertDtype(torch.float32),
-            T.Normalize(mean=[0.6552], std=[0.1531]),
+            T.Normalize(mean=[MEAN], std=[STD]),
         ]
     )
 
-    train = MitoSemsegDataset(root=data_dir, transforms=tf_train)
+    train = MitoSemsegDataset(root=data_dir, transforms=tf_train, weights=True)
     val = MitoSemsegDataset(root=data_dir, transforms=tf_val)
 
     end = int(split * len(train))
@@ -211,13 +211,13 @@ def get_weightmap(mask: np.ndarray) -> np.ndarray:
 
 
 def export_weightmaps():
-    maskdir = Path(TRAIN_ROOT) / "labels" / "martinthesis"
-    weightdir = Path(TRAIN_ROOT) / "weights" / "martinthesis"
+    maskdir = Path(TRAIN_ROOT) / "labels" / "staffan"
+    weightdir = Path(TRAIN_ROOT) / "weights" / "staffan"
     weightdir.mkdir(parents=True, exist_ok=True)
 
     maskpaths = sorted(maskdir.rglob("*.tif"))
     for p in maskpaths:
-        target = weightdir / p.name.replace("label", "weight")
+        target = weightdir / p.name.replace("Labels", "weight")
         mask = cv.imread(str(p), cv.IMREAD_GRAYSCALE)
 
         labels = np.unique(mask)
