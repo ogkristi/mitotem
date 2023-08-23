@@ -6,10 +6,9 @@
 #SBATCH --cpus-per-task=40          
 #SBATCH --mem=0                     # Reserve all memory on the node
 #SBATCH --time=00:15:00             # hh:mm:ss
-#SBATCH --gres=gpu:v100:4,nvme:5    # Reserve 5GB of memory (dataset is 2.8GB)
+#SBATCH --gres=gpu:v100:4           # Reserve 4 GPUs
 
 module purge
 module load pytorch
 
-cp /scratch/project_2008180/processed $LOCAL_SCRATCH
-srun python3 ../src/models/hpo_unet.py 
+srun python3 /projappl/project_2008180/mitotem/src/models/hpo_unet.py 

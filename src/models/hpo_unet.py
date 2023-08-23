@@ -14,26 +14,27 @@ from torch.utils.data import DataLoader
 import torchvision.transforms.v2.functional as F
 import numpy as np
 import click
-from ray import tune
+from ray import tune, air
 from ray.air import Checkpoint, session
 from ray.tune.schedulers import ASHAScheduler
 from src.models.unet import UNet, find_next_valid_size
 from src.data.loaders import load_data_mitosemseg
 
 
-def train_unet(config):
+def train_unet(config, data_dir):
     net = UNet(
         channels_out=config["channels_out"],
         encoder_depth=config["encoder_depth"],
         dropout=config["dropout"],
     )
+    input_size, output_size = find_next_valid_size(1000, 3, config["encoder_depth"])
 
     device = torch.device("cpu")
     if torch.cuda.is_available():
         device = torch.device("cuda:0")
         if torch.cuda.device_count() > 1:
             net = nn.DataParallel(net)
-    net.to(device)
+    net.to(device, torch.float32)  # set the dtype since the model has lazy modules
 
     common = {k: config[k] for k in ("lr", "weight_decay")}
     common["params"] = net.parameters()
@@ -43,6 +44,7 @@ def train_unet(config):
         "adamw": optim.AdamW(**common),
     }
 
+    # mean is calculated after pixel-wise weighing
     criterion = nn.CrossEntropyLoss(reduction="none")
     optimizer = optims[config["optimizer"]]
 
@@ -54,15 +56,16 @@ def train_unet(config):
         optimizer.load_state_dict(checkpoint_state["optimizer_state_dict"])
     else:
         start_epoch = 1
+        net(
+            torch.ones(
+                (1, 1, input_size, input_size), dtype=torch.float32, device=device
+            )
+        )  # dry run
 
-    data_dir = os.getenv("LOCAL_SCRATCH") + "/dataset"
-    input_size, output_size = find_next_valid_size(1000, 3, config["encoder_depth"])
     trainset, valset = load_data_mitosemseg(data_dir, input_size, split=0.85)
 
-    train_iter = DataLoader(
-        trainset, config["batch_size"], shuffle=True, num_workers=16
-    )
-    val_iter = DataLoader(valset, config["batch_size"], shuffle=False, num_workers=16)
+    train_iter = DataLoader(trainset, config["batch_size"], shuffle=True, num_workers=4)
+    val_iter = DataLoader(valset, config["batch_size"], shuffle=False, num_workers=4)
 
     for epoch in range(start_epoch, 11):  # max epochs is 10
         running_loss = 0.0
@@ -85,7 +88,7 @@ def train_unet(config):
 
             running_loss += loss.item()
             epoch_steps += 1
-            if i % 32 == 0:
+            if i % 16 == 0:  # Print loss every 16th minibatch
                 print(f"[{epoch}, {i:>5}] loss: {running_loss/epoch_steps:.3f}")
                 running_loss = 0.0
 
@@ -98,26 +101,27 @@ def train_unet(config):
 
                 outputs = net(inputs)
 
-                loss = criterion(outputs, targets)
+                loss = criterion(outputs, targets).mean()
                 val_loss += loss.cpu().numpy()
                 val_steps += 1
 
-        checkpoint_data = {
-            "epoch": epoch,
-            "net_state_dict": net.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-        }
-        checkpoint = Checkpoint.from_dict(checkpoint_data)
+        # checkpoint_data = {
+        #     "epoch": epoch,
+        #     "net_state_dict": net.state_dict(),
+        #     "optimizer_state_dict": optimizer.state_dict(),
+        # }
+        # checkpoint = Checkpoint.from_dict(checkpoint_data)
 
-        session.report({"loss": val_loss / val_steps}, checkpoint=checkpoint)
+        session.report({"loss": val_loss / val_steps})
 
     print("Finished training")
 
 
 @click.command()
-@click.option("--num_samples", default=20, help="Times to sample the search space")
+@click.option("--data_dir", help="Path to data directory")
+@click.option("--num_samples", default=10, help="Times to sample the search space")
 @click.option("--gpus_per_trial", default=2, help="Number of GPUs to use per trial")
-def main(num_samples, gpus_per_trial):
+def main(data_dir, num_samples, gpus_per_trial):
     config = {
         "batch_size": tune.grid_search([1, 2, 4, 8]),
         "optimizer": tune.grid_search(["sgd", "adam", "adamw"]),
@@ -140,11 +144,14 @@ def main(num_samples, gpus_per_trial):
 
     tuner = tune.Tuner(
         tune.with_resources(
-            tune.with_parameters(train_unet),
+            tune.with_parameters(train_unet, data_dir=data_dir),
             resources={"gpu": gpus_per_trial},
         ),
         tune_config=tune.TuneConfig(
             metric="loss", mode="min", scheduler=scheduler, num_samples=num_samples
+        ),
+        run_config=air.RunConfig(
+            storage_path="/scratch/project_2008180/", name="hpo_unet_results"
         ),
         param_space=config,
     )
