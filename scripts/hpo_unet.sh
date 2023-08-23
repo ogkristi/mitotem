@@ -11,4 +11,4 @@
 module purge
 module load pytorch
 
-srun python3 /projappl/project_2008180/mitotem/src/models/hpo_unet.py 
+srun python3 /projappl/project_2008180/mitotem/src/models/hpo_unet.py --data_dir /scratch/project_2008180/dataset
