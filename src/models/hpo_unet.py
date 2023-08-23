@@ -35,6 +35,9 @@ def train_unet(config, data_dir):
         if torch.cuda.device_count() > 1:
             net = nn.DataParallel(net)
     net.to(device, torch.float32)  # set the dtype since the model has lazy modules
+    net(
+        torch.ones((1, 1, input_size, input_size), dtype=torch.float32, device=device)
+    )  # dry run
 
     common = {k: config[k] for k in ("lr", "weight_decay")}
     common["params"] = net.parameters()
@@ -56,11 +59,6 @@ def train_unet(config, data_dir):
         optimizer.load_state_dict(checkpoint_state["optimizer_state_dict"])
     else:
         start_epoch = 1
-        net(
-            torch.ones(
-                (1, 1, input_size, input_size), dtype=torch.float32, device=device
-            )
-        )  # dry run
 
     trainset, valset = load_data_mitosemseg(data_dir, input_size, split=0.85)
 
