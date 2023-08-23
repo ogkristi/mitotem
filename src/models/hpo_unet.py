@@ -12,7 +12,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import torchvision.transforms.v2.functional as F
-import numpy as np
 import click
 from ray import tune, air
 from ray.air import Checkpoint, session
@@ -22,34 +21,28 @@ from src.data.loaders import load_data_mitosemseg
 
 
 def train_unet(config, data_dir):
+    device = (
+        torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    )
+
     net = UNet(
         channels_out=config["channels_out"],
+        kernel_size=config["kernel_size"],
         encoder_depth=config["encoder_depth"],
         dropout=config["dropout"],
+    ).to(device, torch.float32)
+
+    input_size, output_size = find_next_valid_size(
+        1000, config["kernel_size"], config["encoder_depth"]
     )
-    input_size, output_size = find_next_valid_size(1000, 3, config["encoder_depth"])
+    net(torch.ones((1, 1, input_size, input_size), device=device))  # dry run
 
-    device = torch.device("cpu")
-    if torch.cuda.is_available():
-        device = torch.device("cuda:0")
-        if torch.cuda.device_count() > 1:
-            net = nn.DataParallel(net)
-    net.to(device, torch.float32)  # set the dtype since the model has lazy modules
-    net(
-        torch.ones((1, 1, input_size, input_size), dtype=torch.float32, device=device)
-    )  # dry run
-
-    common = {k: config[k] for k in ("lr", "weight_decay")}
-    common["params"] = net.parameters()
-    optims = {
-        "sgd": optim.SGD(**common, momentum=config["momentum"]),
-        "adam": optim.Adam(**common),
-        "adamw": optim.AdamW(**common),
-    }
+    optimizer = config["optimizer"](
+        net.parameters(), config["lr"], weight_decay=config["weight_decay"]
+    )
 
     # mean is calculated after pixel-wise weighing
-    criterion = nn.CrossEntropyLoss(reduction="none")
-    optimizer = optims[config["optimizer"]]
+    criterion = nn.CrossEntropyLoss(reduction="none").cuda(device)
 
     checkpoint = session.get_checkpoint()
     if checkpoint:
@@ -62,36 +55,53 @@ def train_unet(config, data_dir):
 
     trainset, valset = load_data_mitosemseg(data_dir, input_size, split=0.85)
 
-    train_iter = DataLoader(trainset, config["batch_size"], shuffle=True, num_workers=4)
-    val_iter = DataLoader(valset, config["batch_size"], shuffle=False, num_workers=4)
+    train_iter = DataLoader(
+        trainset,
+        batch_size=config["batch_size"],
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+    )
+    val_iter = DataLoader(
+        valset,
+        batch_size=config["batch_size"],
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+    )
 
     for epoch in range(start_epoch, 11):  # max epochs is 10
+        net.train()
+
+        with torch.profiler.profile(
+            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                "/scratch/project_2008180/profiler"
+            ),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=False,
+        ) as prof:
+            for i, (inputs, targets, weights) in enumerate(train_iter, 1):
+                targets = F.center_crop(targets, output_size)
+                weights = F.center_crop(weights, output_size)
+                inputs, targets, weights = (
+                    inputs.to(device),
+                    targets.to(device),
+                    weights.to(device),
+                )
+
+                optimizer.zero_grad(set_to_none=True)
+
+                outputs = net(inputs)
+                loss = ((1 + weights) * criterion(outputs, targets)).mean()
+                loss.backward()
+                optimizer.step()
+
+                prof.step()
+
         running_loss = 0.0
-        epoch_steps = 0
-        for i, (inputs, targets, weights) in enumerate(train_iter, 1):
-            targets = F.center_crop(targets, output_size)
-            weights = F.center_crop(weights, output_size)
-            inputs, targets, weights = (
-                inputs.to(device),
-                targets.to(device),
-                weights.to(device),
-            )
-
-            optimizer.zero_grad()
-
-            outputs = net(inputs)
-            loss = ((1 + weights) * criterion(outputs, targets)).mean()
-            loss.backward()
-            optimizer.step()
-
-            running_loss += loss.item()
-            epoch_steps += 1
-            if i % 16 == 0:  # Print loss every 16th minibatch
-                print(f"[{epoch}, {i:>5}] loss: {running_loss/epoch_steps:.3f}")
-                running_loss = 0.0
-
-        val_loss = 0.0
-        val_steps = 0
+        net.eval()
         for i, (inputs, targets) in enumerate(val_iter, 1):
             with torch.no_grad():
                 targets = F.center_crop(targets, output_size)
@@ -100,39 +110,35 @@ def train_unet(config, data_dir):
                 outputs = net(inputs)
 
                 loss = criterion(outputs, targets).mean()
-                val_loss += loss.cpu().numpy()
-                val_steps += 1
+                running_loss += loss.item()
 
-        # checkpoint_data = {
-        #     "epoch": epoch,
-        #     "net_state_dict": net.state_dict(),
-        #     "optimizer_state_dict": optimizer.state_dict(),
-        # }
-        # checkpoint = Checkpoint.from_dict(checkpoint_data)
+        checkpoint_data = {
+            "epoch": epoch,
+            "net_state_dict": net.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        }
+        checkpoint = Checkpoint.from_dict(checkpoint_data)
 
-        session.report({"loss": val_loss / val_steps})
+        loss = running_loss / len(val_iter)
+        print(f"[{epoch}, {i:>5}] loss: {loss:.3f}")
+        session.report({"loss": loss}, checkpoint=checkpoint)
 
     print("Finished training")
 
 
 @click.command()
 @click.option("--data_dir", help="Path to data directory")
-@click.option("--num_samples", default=10, help="Times to sample the search space")
-@click.option("--gpus_per_trial", default=2, help="Number of GPUs to use per trial")
-def main(data_dir, num_samples, gpus_per_trial):
+@click.option("--num_samples", default=50, help="Times to sample the search space")
+def main(data_dir, num_samples):
     config = {
-        "batch_size": tune.grid_search([1, 2, 4, 8]),
-        "optimizer": tune.grid_search(["sgd", "adam", "adamw"]),
-        "lr": tune.loguniform(1e-4, 1e-1),
+        "batch_size": tune.choice([1, 2, 4]),
+        "optimizer": tune.choice([optim.Adam, optim.NAdam, optim.RMSprop]),
+        "lr": tune.loguniform(1e-5, 1e-3),
         "dropout": tune.uniform(0.0, 0.5),
-        "momentum": tune.sample_from(
-            lambda spec: np.random.uniform(0.5, 0.99)
-            if spec.config.optimizer == "sgd"
-            else None
-        ),
-        "weight_decay": tune.grid_search([1e-3, 1e-4, 1e-5, 0]),
+        "weight_decay": tune.choice([1e-3, 1e-4, 1e-5, 0]),
         "channels_out": tune.randint(32, 65),
-        "encoder_depth": tune.grid_search([3, 4, 5]),
+        "kernel_size": tune.choice([3, 5]),
+        "encoder_depth": tune.randint(3, 6),
     }
 
     scheduler = ASHAScheduler(
@@ -140,19 +146,25 @@ def main(data_dir, num_samples, gpus_per_trial):
         reduction_factor=2,
     )
 
-    tuner = tune.Tuner(
-        tune.with_resources(
-            tune.with_parameters(train_unet, data_dir=data_dir),
-            resources={"gpu": gpus_per_trial},
-        ),
-        tune_config=tune.TuneConfig(
-            metric="loss", mode="min", scheduler=scheduler, num_samples=num_samples
-        ),
-        run_config=air.RunConfig(
-            storage_path="/scratch/project_2008180/", name="hpo_unet_results"
-        ),
-        param_space=config,
+    trainable = tune.with_resources(
+        tune.with_parameters(train_unet, data_dir=data_dir),
+        resources={"gpu": 1, "cpu": 1},
     )
+
+    run_dir = "/scratch/project_2008180/hpo_unet_results"
+    if not os.path.exists(run_dir):
+        tuner = tune.Tuner(
+            trainable,
+            tune_config=tune.TuneConfig(
+                metric="loss", mode="min", scheduler=scheduler, num_samples=num_samples
+            ),
+            run_config=air.RunConfig(
+                local_dir=os.path.dirname(run_dir), name=os.path.basename(run_dir)
+            ),
+            param_space=config,
+        )
+    else:
+        tuner = tune.Tuner.restore(run_dir, trainable)
 
     result = tuner.fit()
 

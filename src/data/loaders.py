@@ -1,7 +1,7 @@
 import random
 from pathlib import Path
 from random import choice
-from typing import Any, Callable
+from typing import Any, Callable, Optional, Union, Tuple
 import torch
 import torchvision.transforms.v2 as T
 import torchvision.transforms.v2.functional as F
@@ -83,7 +83,7 @@ class TrivialAugmentWide(T.Transform):
 
 class MitoSemsegDataset(VisionDataset):
     def __init__(
-        self, root: str, transforms: Callable | None = None, weights: bool = False
+        self, root: str, transforms: Optional[Callable] = None, weights: bool = False
     ):
         imgdir = Path(root) / "images"
         maskdir = Path(root) / "labels"
@@ -99,7 +99,7 @@ class MitoSemsegDataset(VisionDataset):
 
     def __getitem__(
         self, index: int
-    ) -> tuple[np.ndarray, ...] | tuple[torch.Tensor, ...]:
+    ) -> Union[Tuple[np.ndarray, ...], Tuple[torch.Tensor, ...]]:
         image = cv.imread(str(self.images[index]), cv.IMREAD_GRAYSCALE)
         mask = cv.imread(str(self.masks[index]), cv.IMREAD_GRAYSCALE)
 
@@ -166,7 +166,7 @@ def load_data_mitosemseg(data_dir: str, crop_size: int, split: float = 0.85):
     return train, val
 
 
-def get_mean_and_std() -> tuple[float, float]:
+def get_mean_and_std() -> Tuple[float, float]:
     # Dataset for getting images as float tensors scaled to [0,1]
     dataset = MitoSemsegDataset(
         root=TRAIN_ROOT, transforms=T.ConvertDtype(torch.float32)
