@@ -83,18 +83,20 @@ def train_unet(config, data_dir, run_dir):
         net.load_state_dict(checkpoint["net_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
+    print("Started loading data")
     trainset, valset = load_data(data_dir, input_size, split=0.85)
+    print("Finished loading data")
 
     train_iter = DataLoader(
         trainset,
         batch_size=config["batch_size"],
         shuffle=True,
-        num_workers=4,
+        num_workers=10,
         pin_memory=True,
     )
     val_iter = DataLoader(
         valset,
-        num_workers=4,
+        num_workers=10,
         pin_memory=True,
     )
 
@@ -115,7 +117,7 @@ def train_unet(config, data_dir, run_dir):
             with_stack=False,
         ) as prof:
             # Training loop
-            for inputs, targets, weights in train_iter:
+            for i, (inputs, targets, weights) in enumerate(train_iter, 1):
                 targets = TF.center_crop(targets, output_size)
                 weights = TF.center_crop(weights, output_size)
                 inputs, targets, weights = (
@@ -132,9 +134,11 @@ def train_unet(config, data_dir, run_dir):
                 loss.backward()
                 optimizer.step()
 
+                print(f"Epoch {epoch}, minibatch {i}, loss {loss.item()}")
                 prof.step()
 
         # Evaluation of mean validation accuracy
+        print("Evaluating accuracy")
         accuracies = []
         net.eval()
         for inputs, targets in val_iter:
@@ -159,7 +163,7 @@ def train_unet(config, data_dir, run_dir):
 
         # Reporting
         print(
-            f"Epoch {epoch}: training loss {mean(losses)}, validation accuracy {accuracy:.3f}"
+            f"Finished epoch {epoch}: training loss {mean(losses):.3f}, validation accuracy {accuracy:.3f}"
         )
         writer.add_scalar("Loss/train", mean(losses), epoch)
         writer.add_scalar("Accuracy/test", accuracy, epoch)
@@ -179,7 +183,7 @@ def train_unet(config, data_dir, run_dir):
 )
 def main(data_dir, run_dir):
     config = {
-        "batch_size": 4,
+        "batch_size": 8,
         "optimizer": "rmsprop",
         "lr": 1e-4,
         "dropout": 0.2,
