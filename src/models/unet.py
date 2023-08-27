@@ -133,7 +133,7 @@ def predict(
     # make a minibatch of patches
     patches = unfold(src, kernel_size=k, stride=s).permute(2, 0, 1).reshape(-1, 1, k, k)
     # do prediction on minibatch
-    patches = model(patches).argmax(dim=1, keepdim=True)
+    patches = model(patches).argmax(dim=1, keepdim=True).to(torch.float32)
     patches = patches.reshape(-1, 1, s * s).permute(1, 2, 0)
     # fold patches back to full image
     dst = fold(patches, output_size=(h + extra_h, w + extra_w), kernel_size=s, stride=s)
