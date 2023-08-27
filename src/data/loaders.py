@@ -83,54 +83,68 @@ class TrivialAugmentWide(T.Transform):
 
 class MitoSemsegDataset(VisionDataset):
     def __init__(
-        self, root: str, transforms: Optional[Callable] = None, weights: bool = False
+        self,
+        root: str,
+        transforms: Optional[Callable] = None,
+        weights: bool = False,
+        debug: bool = False,
     ):
         imgdir = Path(root) / "images"
         maskdir = Path(root) / "labels"
-        self.images = sorted(imgdir.rglob("*.tif"))
-        self.masks = sorted(maskdir.rglob("*.tif"))
+        images = sorted(imgdir.rglob("*.tif"))
+        masks = sorted(maskdir.rglob("*.tif"))
+
+        if debug:
+            images = images[81:83]
+            masks = masks[81:83]
+
+        self.images = [cv.imread(str(pth), cv.IMREAD_GRAYSCALE) for pth in images]
+        self.masks = [cv.imread(str(pth), cv.IMREAD_GRAYSCALE) for pth in masks]
         self.weights = None
 
         if weights:
             weightdir = Path(root) / "weights"
-            self.weights = sorted(weightdir.rglob("*.tif"))
+            weights = sorted(weightdir.rglob("*.tif"))
+
+            if debug:
+                weights = weights[81:83]
+
+            self.weights = [cv.imread(str(pth), cv.IMREAD_GRAYSCALE) for pth in weights]
+
+            for m in self.masks:
+                labels = np.unique(m)
+                if len(labels) > 2:
+                    labels = labels[1:]
+                    # Erode all instance masks individually to force a border of two
+                    # background pixels between them
+                    masks = (m[:, :, None] == labels[None, None, :]).astype(np.uint8)
+                    masks = cv.erode(
+                        masks, cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3))
+                    )
+                    m[:] = np.bitwise_or.reduce(masks, axis=2)
+        else:
+            for m in self.masks:
+                _, m[:] = cv.threshold(m, 0, 1, cv.THRESH_BINARY)
 
         self.transforms = transforms
 
     def __getitem__(
         self, index: int
     ) -> Union[Tuple[np.ndarray, ...], Tuple[torch.Tensor, ...]]:
-        image = cv.imread(str(self.images[index]), cv.IMREAD_GRAYSCALE)
-        mask = cv.imread(str(self.masks[index]), cv.IMREAD_GRAYSCALE)
-
-        if self.weights:
-            weight = cv.imread(str(self.weights[index]), cv.IMREAD_GRAYSCALE)
-
-            labels = np.unique(mask)
-            if len(labels) > 2:
-                labels = labels[1:]
-                # Erode all instance masks individually to force a border of two
-                # background pixels between them
-                masks = (mask[:, :, None] == labels[None, None, :]).astype(np.uint8)
-                masks = cv.erode(
-                    masks, cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3))
-                )
-                mask = np.bitwise_or.reduce(masks, axis=2)
-
-        _, mask = cv.threshold(mask, 0, 1, cv.THRESH_BINARY)
+        image, mask = self.images[index], self.masks[index]
 
         if self.transforms:
             example = (datapoints.Image(image), datapoints.Mask(mask, dtype=torch.long))
 
             if self.weights:
-                example += (datapoints.Mask(weight, dtype=torch.float32),)
+                example += (datapoints.Mask(self.weights[index], dtype=torch.float32),)
 
             example = self.transforms(example)
         else:
             example = (image, mask)
 
             if self.weights:
-                example += (weight,)
+                example += (self.weights[index],)
 
         return example
 

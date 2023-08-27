@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-from torchvision.transforms.v2.functional import center_crop
+from torch.nn.functional import fold, unfold
+from torchvision.transforms.v2.functional import center_crop, pad
 
 
 class UNet(nn.Module):
@@ -109,3 +110,26 @@ def find_next_valid_size(size: int, kernel_size: int, depth: int) -> tuple:
         if size_after % 2**depth == 0:
             return size, size - total_shrinkage
         size += 1
+
+
+def predict(
+    src: torch.Tensor, model: nn.Module, input_size: int, output_size: int
+) -> torch.Tensor:
+    k, s = input_size, output_size
+    h, w = src.shape[-2:]
+    p = (input_size - output_size) // 2  # padding
+    # extra one-sided paddings to make sure src size is integer multiple of stride s
+    extra_w = (1 + w // output_size) * output_size - w
+    extra_h = (1 + h // output_size) * output_size - h
+
+    src = pad(
+        src, [p + extra_w, p, p, p + extra_h], padding_mode="reflect"
+    )  # left, top, right,  bottom
+    # make a minibatch of patches
+    patches = unfold(src, kernel_size=k, stride=s).permute(2, 0, 1).reshape(-1, 1, k, k)
+    # do prediction on minibatch
+    patches = model(patches).reshape(-1, 1, s * s).permute(1, 2, 0)
+    # fold patches back to full image
+    dst = fold(patches, output_size=(h + extra_h, w + extra_w), kernel_size=s, stride=s)
+
+    return dst[:, :, :-extra_h, extra_w:]
