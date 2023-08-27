@@ -164,7 +164,7 @@ def train_unet(config, data_dir, run_dir):
 
         # Reporting
         print(
-            f"Finished epoch {epoch}: training loss {mean(losses):.3f}, validation accuracy {accuracy:.3f}"
+            f"Finished epoch {epoch}: training loss {mean(losses)}, validation accuracy {accuracy}"
         )
         writer.add_scalar("Loss/train", mean(losses), epoch)
         writer.add_scalar("Accuracy/test", accuracy, epoch)
