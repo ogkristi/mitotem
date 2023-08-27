@@ -115,6 +115,11 @@ def find_next_valid_size(size: int, kernel_size: int, depth: int) -> tuple:
 def predict(
     src: torch.Tensor, model: nn.Module, input_size: int, output_size: int
 ) -> torch.Tensor:
+    if src.ndim == 2:
+        src = src.unsqueeze(0)
+    if src.ndim == 3:
+        src = src.unsqueeze(0)
+
     k, s = input_size, output_size
     h, w = src.shape[-2:]
     p = (input_size - output_size) // 2  # padding
@@ -128,8 +133,9 @@ def predict(
     # make a minibatch of patches
     patches = unfold(src, kernel_size=k, stride=s).permute(2, 0, 1).reshape(-1, 1, k, k)
     # do prediction on minibatch
-    patches = model(patches).reshape(-1, 1, s * s).permute(1, 2, 0)
+    patches = model(patches).argmax(dim=1, keepdim=True)
+    patches = patches.reshape(-1, 1, s * s).permute(1, 2, 0)
     # fold patches back to full image
     dst = fold(patches, output_size=(h + extra_h, w + extra_w), kernel_size=s, stride=s)
 
-    return dst[:, :, :-extra_h, extra_w:]
+    return dst[:, :, :-extra_h, extra_w:].squeeze()

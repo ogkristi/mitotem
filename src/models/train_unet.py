@@ -73,7 +73,7 @@ def train_unet(config, data_dir, run_dir):
         net.parameters(), config["lr"], weight_decay=config["weight_decay"]
     )
 
-    criterion = nn.CrossEntropyLoss(reduction="none")
+    criterion = nn.CrossEntropyLoss(reduction="none").to(device)
 
     start_epoch = 1
     checkpoint_path = Path(run_dir) / "checkpoint.pt"
@@ -96,46 +96,47 @@ def train_unet(config, data_dir, run_dir):
     )
     val_iter = DataLoader(
         valset,
-        num_workers=10,
+        batch_size=1,
+        num_workers=1,
         pin_memory=True,
     )
 
     stop_condition = EarlyStopping(patience=5, mode="max")
-    metric = BinaryJaccardIndex()
+    metric = BinaryJaccardIndex().to(device)
     best_accuracy = -1
     for epoch in range(start_epoch, 151):  # max epochs is 150
         net.train()
         losses = []
 
-        with torch.profiler.profile(
-            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                "/scratch/project_2008180/profiler"
-            ),
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=False,
-        ) as prof:
-            # Training loop
-            for i, (inputs, targets, weights) in enumerate(train_iter, 1):
-                targets = TF.center_crop(targets, output_size)
-                weights = TF.center_crop(weights, output_size)
-                inputs, targets, weights = (
-                    inputs.to(device),
-                    targets.to(device),
-                    weights.to(device),
-                )
+        # with torch.profiler.profile(
+        #     schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
+        #     on_trace_ready=torch.profiler.tensorboard_trace_handler(
+        #         "/scratch/project_2008180/profiler"
+        #     ),
+        #     record_shapes=True,
+        #     profile_memory=True,
+        #     with_stack=False,
+        # ) as prof:
+        # Training loop
+        for i, (inputs, targets, weights) in enumerate(train_iter, 1):
+            targets = TF.center_crop(targets, output_size)
+            weights = TF.center_crop(weights, output_size)
+            inputs, targets, weights = (
+                inputs.to(device),
+                targets.to(device),
+                weights.to(device),
+            )
 
-                optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=True)
 
-                outputs = net(inputs)
-                loss = ((1 + weights) * criterion(outputs, targets)).mean()
-                losses.append(loss.item())
-                loss.backward()
-                optimizer.step()
+            outputs = net(inputs)
+            loss = ((1 + weights) * criterion(outputs, targets)).mean()
+            losses.append(loss.item())
+            loss.backward()
+            optimizer.step()
 
-                print(f"Epoch {epoch}, minibatch {i}, loss {loss.item()}")
-                prof.step()
+            print(f"Epoch {epoch}, minibatch {i}, loss {loss.item()}")
+            # prof.step()
 
         # Evaluation of mean validation accuracy
         print("Evaluating accuracy")
@@ -145,7 +146,7 @@ def train_unet(config, data_dir, run_dir):
             with torch.no_grad():
                 inputs, targets = inputs.to(device), targets.to(device)
                 outputs = predict(inputs, net, input_size, output_size)
-                accuracies.append(metric(outputs, targets).item())
+                accuracies.append(metric(outputs, targets.squeeze()).item())
         accuracy = mean(accuracies)
 
         # Checkpoint best model
