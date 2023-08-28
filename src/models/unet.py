@@ -160,8 +160,8 @@ def predict(
         # Do prediction one row of overlap patches at a time
         patches_out = torch.empty((L, 1, s, s), dtype=torch.int64, device=src.device)
         for i in range(L_h):
-            batch = patches_in[i * L_w : (i + 1) * L_w, 0, :, :]
-            patches_out[i * L_w : (i + 1) * L_w, 0, :, :] = model(batch).argmax(
+            batch = patches_in[i * L_w : (i + 1) * L_w, :, :, :]
+            patches_out[i * L_w : (i + 1) * L_w, :, :, :] = model(batch).argmax(
                 dim=1, keepdim=True
             )
 

@@ -1,7 +1,7 @@
 import random
 from pathlib import Path
 from random import choice
-from typing import Any, Callable, Optional, Union, Tuple
+from typing import Any, Callable, Optional, Union, Tuple, List
 import torch
 import torchvision.transforms.v2 as T
 import torchvision.transforms.v2.functional as F
@@ -199,6 +199,19 @@ def get_mean_and_std() -> Tuple[float, float]:
     e_x2 = sum_2 / pixels_total
 
     return e_x.item(), torch.sqrt(e_x2 - e_x**2).item()
+
+
+def get_class_frequencies() -> List[float]:
+    dataset = MitoSemsegDataset(root=TRAIN_ROOT)
+
+    freq = 0.0
+    for _, mask in dataset:
+        h, w = mask.shape[-2:]
+        freq += np.sum(mask) / (h * w)
+
+    freq = freq / len(dataset)
+
+    return [1 - freq, freq]
 
 
 def get_weightmap(mask: np.ndarray) -> np.ndarray:

@@ -74,7 +74,9 @@ def train_unet(config, data_dir, run_dir):
         net.parameters(), config["lr"], weight_decay=config["weight_decay"]
     )
 
-    criterion = nn.CrossEntropyLoss(reduction="none").to(device)
+    criterion = nn.CrossEntropyLoss(
+        weight=1 / torch.tensor(CLASS_FREQ), reduction="none"
+    ).to(device)
 
     start_epoch = 1
     checkpoint_path = Path(run_dir) / "checkpoint.pt"
@@ -93,7 +95,7 @@ def train_unet(config, data_dir, run_dir):
         trainset,
         batch_size=config["batch_size"],
         shuffle=True,
-        num_workers=15,
+        num_workers=12,
         pin_memory=True,
     )
     val_iter = DataLoader(
