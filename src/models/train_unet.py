@@ -93,11 +93,13 @@ def train_unet(config, data_dir, run_dir):
         trainset,
         batch_size=config["batch_size"],
         shuffle=True,
+        num_workers=15,
         pin_memory=True,
     )
     val_iter = DataLoader(
         valset,
         batch_size=1,
+        num_workers=1,
         pin_memory=True,
     )
 

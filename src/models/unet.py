@@ -149,22 +149,29 @@ def predict(
         L_h = 1 + ((src.shape[2] - k) // s)  # Number of vertical overlap patches
         L = L_h * L_w  # Total number of patches
 
-        # Arrange patches as minibatch (L,1,H,W)
-        patches = torch.empty((L, 1, k, k), dtype=torch.float32)
+        # Arrange patches as minibatch
+        patches_in = torch.empty((L, 1, k, k), dtype=torch.float32, device=src.device)
         for i in range(L_h):
             for j in range(L_w):
-                patches[i * L_w + j, 0, :, :] = src[
+                patches_in[i * L_w + j, 0, :, :] = src[
                     0, 0, i * s : i * s + k, j * s : j * s + k
                 ]
 
-        # Do prediction
-        patches = model(patches).argmax(dim=1, keepdim=True)
+        # Do prediction one row of overlap patches at a time
+        patches_out = torch.empty((L, 1, s, s), dtype=torch.int64, device=src.device)
+        for i in range(L_h):
+            batch = patches_in[i * L_w : (i + 1) * L_w, 0, :, :]
+            patches_out[i * L_w : (i + 1) * L_w, 0, :, :] = model(batch).argmax(
+                dim=1, keepdim=True
+            )
 
         # Gather patches back to a single image
-        dst = torch.empty((1, 1, h + extra_h, w + extra_w), dtype=torch.int64)
+        dst = torch.empty(
+            (1, 1, h + extra_h, w + extra_w), dtype=torch.int64, device=src.device
+        )
         for i in range(L_h):
             for j in range(L_w):
-                dst[0, 0, i * s : (1 + i) * s, j * s : (1 + j) * s] = patches[
+                dst[0, 0, i * s : (1 + i) * s, j * s : (1 + j) * s] = patches_out[
                     i * L_w + j, 0, :, :
                 ]
 
