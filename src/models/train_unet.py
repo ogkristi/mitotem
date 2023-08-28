@@ -95,7 +95,7 @@ def train_unet(config, data_dir, run_dir):
         trainset,
         batch_size=config["batch_size"],
         shuffle=True,
-        num_workers=12,
+        num_workers=8,
         pin_memory=True,
     )
     val_iter = DataLoader(
