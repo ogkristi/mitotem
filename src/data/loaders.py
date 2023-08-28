@@ -87,16 +87,16 @@ class MitoSemsegDataset(VisionDataset):
         root: str,
         transforms: Optional[Callable] = None,
         weights: bool = False,
-        debug: bool = False,
+        indices: list = None,
     ):
         imgdir = Path(root) / "images"
         maskdir = Path(root) / "labels"
         images = sorted(imgdir.rglob("*.tif"))
         masks = sorted(maskdir.rglob("*.tif"))
 
-        if debug:
-            images = images[81:83]
-            masks = masks[81:83]
+        if indices:
+            images = [images[i] for i in indices]
+            masks = [masks[i] for i in indices]
 
         self.images = [cv.imread(str(pth), cv.IMREAD_GRAYSCALE) for pth in images]
         self.masks = [cv.imread(str(pth), cv.IMREAD_GRAYSCALE) for pth in masks]
@@ -106,8 +106,8 @@ class MitoSemsegDataset(VisionDataset):
             weightdir = Path(root) / "weights"
             weights = sorted(weightdir.rglob("*.tif"))
 
-            if debug:
-                weights = weights[81:83]
+            if indices:
+                weights = [weights[i] for i in indices]
 
             self.weights = [cv.imread(str(pth), cv.IMREAD_GRAYSCALE) for pth in weights]
 

@@ -37,13 +37,14 @@ def load_data(data_dir: str, crop_size: int, split: float = 0.85):
         ]
     )
 
-    train = MitoSemsegDataset(root=data_dir, transforms=tf_train, weights=True)
-    val = MitoSemsegDataset(root=data_dir, transforms=tf_val)
+    bound = int(split * DATASET_SIZE)
+    gene = torch.Generator().manual_seed(33)
+    indices = torch.randperm(DATASET_SIZE, generator=gene).tolist()
 
-    end = int(split * len(train))
-    indices = torch.randperm(len(train)).tolist()
-    train = torch.utils.data.Subset(train, indices[:end])
-    val = torch.utils.data.Subset(val, indices[end:])
+    train = MitoSemsegDataset(
+        root=data_dir, transforms=tf_train, weights=True, indices=indices[:bound]
+    )
+    val = MitoSemsegDataset(root=data_dir, transforms=tf_val, indices=indices[bound:])
 
     return train, val
 
@@ -84,27 +85,26 @@ def train_unet(config, data_dir, run_dir):
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
     print("Started loading data")
-    trainset, valset = load_data(data_dir, input_size, split=0.85)
+    # Validation set is 16 images
+    trainset, valset = load_data(data_dir, input_size, split=0.9375)
     print("Finished loading data")
 
     train_iter = DataLoader(
         trainset,
         batch_size=config["batch_size"],
         shuffle=True,
-        num_workers=8,
         pin_memory=True,
     )
     val_iter = DataLoader(
         valset,
         batch_size=1,
-        num_workers=1,
         pin_memory=True,
     )
 
-    stop_condition = EarlyStopping(patience=5, mode="max")
+    stop_condition = EarlyStopping(patience=10, mode="max")
     metric = BinaryJaccardIndex().to(device)
     best_accuracy = -1
-    for epoch in range(start_epoch, 151):  # max epochs is 150
+    for epoch in range(start_epoch, 257):  # max epochs is 256
         net.train()
         losses = []
 
@@ -185,7 +185,7 @@ def train_unet(config, data_dir, run_dir):
 def main(data_dir, run_dir):
     config = {
         "batch_size": 8,
-        "optimizer": "rmsprop",
+        "optimizer": "adam",
         "lr": 1e-4,
         "dropout": 0.2,
         "weight_decay": 1e-4,

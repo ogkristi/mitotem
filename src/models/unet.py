@@ -130,12 +130,42 @@ def predict(
     src = pad(
         src, [p + extra_w, p, p, p + extra_h], padding_mode="reflect"
     )  # left, top, right,  bottom
-    # make a minibatch of patches
-    patches = unfold(src, kernel_size=k, stride=s).permute(2, 0, 1).reshape(-1, 1, k, k)
-    # do prediction on minibatch
-    patches = model(patches).argmax(dim=1, keepdim=True).to(torch.float32)
-    patches = patches.reshape(-1, 1, s * s).permute(1, 2, 0)
-    # fold patches back to full image
-    dst = fold(patches, output_size=(h + extra_h, w + extra_w), kernel_size=s, stride=s)
+
+    use_fold = False  # Two alternative ways are implemented, for loop based was faster
+    if use_fold:
+        # make a minibatch of patches
+        patches = (
+            unfold(src, kernel_size=k, stride=s).permute(2, 0, 1).reshape(-1, 1, k, k)
+        )
+        # do prediction on minibatch
+        patches = model(patches).argmax(dim=1, keepdim=True).to(torch.float32)
+        patches = patches.reshape(-1, 1, s * s).permute(1, 2, 0)
+        # fold patches back to full image
+        dst = fold(
+            patches, output_size=(h + extra_h, w + extra_w), kernel_size=s, stride=s
+        )
+    else:
+        L_w = 1 + ((src.shape[3] - k) // s)  # Number of horizontal overlap patches
+        L_h = 1 + ((src.shape[2] - k) // s)  # Number of vertical overlap patches
+        L = L_h * L_w  # Total number of patches
+
+        # Arrange patches as minibatch (L,1,H,W)
+        patches = torch.empty((L, 1, k, k), dtype=torch.float32)
+        for i in range(L_h):
+            for j in range(L_w):
+                patches[i * L_w + j, 0, :, :] = src[
+                    0, 0, i * s : i * s + k, j * s : j * s + k
+                ]
+
+        # Do prediction
+        patches = model(patches).argmax(dim=1, keepdim=True)
+
+        # Gather patches back to a single image
+        dst = torch.empty((1, 1, h + extra_h, w + extra_w), dtype=torch.int64)
+        for i in range(L_h):
+            for j in range(L_w):
+                dst[0, 0, i * s : (1 + i) * s, j * s : (1 + j) * s] = patches[
+                    i * L_w + j, 0, :, :
+                ]
 
     return dst[:, :, :-extra_h, extra_w:].squeeze()
