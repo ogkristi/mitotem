@@ -157,11 +157,11 @@ def predict(
                     0, 0, i * s : i * s + k, j * s : j * s + k
                 ]
 
-        # Do prediction one row of overlap patches at a time
+        # Do prediction 8 overlap patches at a time
         patches_out = torch.empty((L, 1, s, s), dtype=torch.int64, device=src.device)
-        for i in range(L_h):
-            batch = patches_in[i * L_w : (i + 1) * L_w, :, :, :]
-            patches_out[i * L_w : (i + 1) * L_w, :, :, :] = model(batch).argmax(
+        for i in range(0, L, 8):
+            batch = patches_in[i : min(i + 8, L), :, :, :]
+            patches_out[i : min(i + 8, L), :, :, :] = model(batch).argmax(
                 dim=1, keepdim=True
             )
 
@@ -175,4 +175,4 @@ def predict(
                     i * L_w + j, 0, :, :
                 ]
 
-    return dst[:, :, :-extra_h, extra_w:].squeeze()
+    return dst[:, :, :-extra_h, extra_w:].squeeze(0)

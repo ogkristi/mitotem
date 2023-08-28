@@ -1,7 +1,7 @@
 import random
 from pathlib import Path
 from random import choice
-from typing import Any, Callable, Optional, Union, Tuple, List
+from typing import Any, Callable, Optional, Union, Tuple, List, Sequence
 import torch
 import torchvision.transforms.v2 as T
 import torchvision.transforms.v2.functional as F
@@ -12,6 +12,19 @@ import numpy as np
 from config.settings import *
 
 MITOSEM_CLASSES = ["background", "mitochondria"]
+
+
+class CenterCropMask(T.Transform):
+    def __init__(self, size: Union[int, Sequence[int]]):
+        super().__init__()
+
+        self.size = size
+
+    def _transform(self, inpt: Any, params: dict[str, Any]) -> Any:
+        if isinstance(inpt, datapoints.Image):
+            return inpt
+        else:
+            return F.center_crop(inpt, self.size)
 
 
 class TrivialAugmentWide(T.Transform):
