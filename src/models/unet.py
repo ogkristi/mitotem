@@ -1,7 +1,45 @@
+from math import ceil
 import torch
 from torch import nn
-from torch.nn.functional import fold, unfold
+from torch.nn.functional import fold, unfold, relu
 from torchvision.transforms.v2.functional import center_crop, pad
+
+
+class DoubleConv(nn.Module):
+    def __init__(self, channels_out, kernel_size):
+        super().__init__()
+
+        self.net = nn.Sequential(
+            nn.LazyConv2d(channels_out, kernel_size),
+            nn.LazyInstanceNorm2d(),
+            nn.LeakyReLU(),
+            nn.LazyConv2d(channels_out, kernel_size),
+            nn.LazyInstanceNorm2d(),
+            nn.LeakyReLU(),
+        )
+
+    def forward(self, X):
+        return self.net(X)
+
+
+class ResidualDoubleConv(nn.Module):
+    def __init__(self, channels_out, kernel_size):
+        super().__init__()
+
+        self.residualblock = nn.Sequential(
+            nn.LazyConv2d(channels_out, kernel_size),
+            nn.LazyBatchNorm2d(),
+            nn.ReLU(),
+            nn.LazyConv2d(channels_out, kernel_size),
+            nn.LazyBatchNorm2d(),
+        )
+        self.conv1x1 = nn.LazyConv2d(channels_out, kernel_size=1)
+
+    def forward(self, X):
+        H = self.residualblock(X)
+        X = self.conv1x1(center_crop(X, H.shape[-2:]))
+        Y = relu(H + X)
+        return Y
 
 
 class UNet(nn.Module):
@@ -20,10 +58,7 @@ class UNet(nn.Module):
             self.encoder.append(EncoderBlock(channels_out * 2**i, kernel_size))
 
         self.bridge = nn.Sequential(
-            nn.LazyConv2d(channels_out * 2**encoder_depth, kernel_size),
-            nn.ReLU(),
-            nn.LazyConv2d(channels_out * 2**encoder_depth, kernel_size),
-            nn.ReLU(),
+            DoubleConv(channels_out * 2**encoder_depth, kernel_size),
             nn.Dropout2d(dropout),
         )
 
@@ -51,15 +86,9 @@ class UNet(nn.Module):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, out_channels, kernel_size=3, num_convs=2):
+    def __init__(self, out_channels, kernel_size=3):
         super().__init__()
-
-        layers = []
-        for _ in range(num_convs):
-            layers.append(nn.LazyConv2d(out_channels, kernel_size=kernel_size))
-            layers.append(nn.ReLU())
-
-        self.convblock = nn.Sequential(*layers)
+        self.convblock = DoubleConv(out_channels, kernel_size)
         self.poolblock = nn.MaxPool2d(kernel_size=2, stride=2)
 
     def forward(self, X):
@@ -69,19 +98,13 @@ class EncoderBlock(nn.Module):
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, out_channels, kernel_size=3, num_convs=2):
+    def __init__(self, out_channels, kernel_size=3):
         super().__init__()
-
         self.unpoolblock = nn.Sequential(
             nn.LazyConvTranspose2d(out_channels, kernel_size=2, stride=2),
-            nn.ReLU(),
+            nn.LeakyReLU(),
         )
-
-        layers = []
-        for _ in range(num_convs):
-            layers.append(nn.LazyConv2d(out_channels, kernel_size=kernel_size))
-            layers.append(nn.ReLU())
-        self.convblock = nn.Sequential(*layers)
+        self.convblock = DoubleConv(out_channels, kernel_size)
 
     def forward(self, X, skip):
         H = self.unpoolblock(X)
@@ -124,8 +147,8 @@ def predict(
     h, w = src.shape[-2:]
     p = (input_size - output_size) // 2  # padding
     # extra one-sided paddings to make sure src size is integer multiple of stride s
-    extra_w = (1 + w // output_size) * output_size - w
-    extra_h = (1 + h // output_size) * output_size - h
+    extra_w = ceil(w / output_size) * output_size - w
+    extra_h = ceil(h / output_size) * output_size - h
 
     src = pad(
         src, [p + extra_w, p, p, p + extra_h], padding_mode="reflect"
@@ -148,9 +171,10 @@ def predict(
         L_w = 1 + ((src.shape[3] - k) // s)  # Number of horizontal overlap patches
         L_h = 1 + ((src.shape[2] - k) // s)  # Number of vertical overlap patches
         L = L_h * L_w  # Total number of patches
+        L8 = ceil(L / 8) * 8
 
         # Arrange patches as minibatch
-        patches_in = torch.empty((L, 1, k, k), dtype=torch.float32, device=src.device)
+        patches_in = torch.empty((L8, 1, k, k), dtype=torch.float32, device=src.device)
         for i in range(L_h):
             for j in range(L_w):
                 patches_in[i * L_w + j, 0, :, :] = src[
@@ -158,12 +182,10 @@ def predict(
                 ]
 
         # Do prediction 8 overlap patches at a time
-        patches_out = torch.empty((L, 1, s, s), dtype=torch.int64, device=src.device)
+        patches_out = torch.empty((L8, 1, s, s), dtype=torch.int64, device=src.device)
         for i in range(0, L, 8):
-            batch = patches_in[i : min(i + 8, L), :, :, :]
-            patches_out[i : min(i + 8, L), :, :, :] = model(batch).argmax(
-                dim=1, keepdim=True
-            )
+            batch = patches_in[i : i + 8, :, :, :]
+            patches_out[i : i + 8, :, :, :] = model(batch).argmax(dim=1, keepdim=True)
 
         # Gather patches back to a single image
         dst = torch.empty(

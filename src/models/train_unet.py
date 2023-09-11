@@ -6,6 +6,7 @@ sys.path.append(os.getenv("PYTHONPATH"))
 from config.settings import *
 
 from pathlib import Path
+import time
 import click
 import torch
 import torch.nn as nn
@@ -17,12 +18,18 @@ from torch.utils.tensorboard import SummaryWriter
 from numpy import mean
 from src.models.unet import UNet, find_next_valid_size, predict
 from src.models.utils import EarlyStopping
-from src.data.loaders import MitoSemsegDataset, TrivialAugmentWide, CenterCropMask
+from src.data.loaders import (
+    MitoSemsegDataset,
+    TrivialAugmentWide,
+    CenterCropMask,
+    ForegroundCrop,
+)
 
 
 def load_data(data_dir: str, input_size: int, output_size: int, split: float = 0.85):
     tf_train = T.Compose(
         [
+            ForegroundCrop(minsize=input_size),
             T.RandomCrop(input_size),
             TrivialAugmentWide(),
             CenterCropMask(output_size),
@@ -47,6 +54,13 @@ def load_data(data_dir: str, input_size: int, output_size: int, split: float = 0
     val = MitoSemsegDataset(root=data_dir, transforms=tf_val, indices=indices[bound:])
 
     return train, val
+
+
+def get_checkpoint(run_dir: str):
+    checkpoint_path = Path(run_dir) / "checkpoint.pt"
+    if checkpoint_path.exists():
+        return torch.load(checkpoint_path)
+    return None
 
 
 def train_unet(config, data_dir, run_dir):
@@ -74,18 +88,21 @@ def train_unet(config, data_dir, run_dir):
         net.parameters(), config["lr"], weight_decay=config["weight_decay"]
     )
 
-    criterion = nn.CrossEntropyLoss(
-        weight=1 / torch.tensor(CLASS_FREQ), reduction="none"
-    ).to(device)
+    scaler = torch.cuda.amp.GradScaler(enabled=config["amp"])
 
     start_epoch = 1
-    checkpoint_path = Path(run_dir) / "checkpoint.pt"
-    if checkpoint_path.exists():
+    # Load state from checkpoint if exists
+    checkpoint = get_checkpoint(run_dir)
+    if checkpoint:
         print("Loading checkpoint")
-        checkpoint = torch.load(checkpoint_path)
         start_epoch = checkpoint["epoch"]
-        net.load_state_dict(checkpoint["net_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        net.load_state_dict(checkpoint["net"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        scaler.load_state_dict(checkpoint["scaler"])
+
+    loss_fn = nn.CrossEntropyLoss(
+        weight=1 / torch.tensor(CLASS_FREQ), reduction="none"
+    ).to(device)
 
     print("Started loading data")
     # Validation set is 16 images
@@ -111,6 +128,7 @@ def train_unet(config, data_dir, run_dir):
     metric = BinaryJaccardIndex().to(device)
     best_accuracy = -1
     for epoch in range(start_epoch, 257):  # max epochs is 256
+        timer_epoch = time.time()
         net.train()
         losses = []
 
@@ -125,6 +143,7 @@ def train_unet(config, data_dir, run_dir):
         # ) as prof:
         # Training loop
         for i, (inputs, targets, weights) in enumerate(train_iter, 1):
+            timer_batch = time.time()
             inputs, targets, weights = (
                 inputs.to(device),
                 targets.to(device),
@@ -133,13 +152,16 @@ def train_unet(config, data_dir, run_dir):
 
             optimizer.zero_grad(set_to_none=True)
 
-            outputs = net(inputs)
-            loss = ((1 + weights) * criterion(outputs, targets)).mean()
+            with torch.autocast(device, torch.float16, config["amp"]):
+                outputs = net(inputs)
+                loss = ((1 + weights) * loss_fn(outputs, targets)).mean()
             losses.append(loss.detach())
-            loss.backward()
-            optimizer.step()
 
-            print(f"Epoch {epoch}, minibatch {i}")
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            print(f"Epoch {epoch}, minibatch {i} ({time.time()-timer_batch:.3f}s)")
             # prof.step()
 
         # Evaluation of mean validation accuracy
@@ -147,7 +169,7 @@ def train_unet(config, data_dir, run_dir):
         accuracies = []
         net.eval()
         for inputs, targets in val_iter:
-            with torch.no_grad():
+            with torch.no_grad(), torch.autocast(device, torch.float16, config["amp"]):
                 inputs, targets = inputs.to(device), targets.to(device)
                 outputs = predict(inputs, net, input_size, output_size)
                 accuracies.append(metric(outputs, targets))
@@ -162,16 +184,18 @@ def train_unet(config, data_dir, run_dir):
             torch.save(
                 {
                     "epoch": epoch,
-                    "net_state_dict": net.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
+                    "net": net.state_dict(),
+                    "optimizer": optimizer.state_dict(),
                     "accuracy": accuracy,
+                    "scaler": scaler.state_dict(),
                 },
                 checkpoint_path,
             )
 
         # Reporting
         print(
-            f"Finished epoch {epoch}: training loss {loss}, validation accuracy {accuracy}"
+            f"Finished epoch {epoch}: training loss {loss:.3f}, "
+            f"validation accuracy {accuracy:.3f} ({time.time()-timer_epoch:.3f}s)"
         )
         writer.add_scalar("Loss/train", loss, epoch)
         writer.add_scalar("Accuracy/test", accuracy, epoch)
@@ -191,13 +215,14 @@ def train_unet(config, data_dir, run_dir):
 )
 def main(data_dir, run_dir):
     config = {
+        "amp": True,  # automatic mixed precision
         "batch_size": 8,
         "optimizer": "adam",
         "lr": 1e-4,
         "dropout": 0.2,
         "weight_decay": 1e-4,
-        "channels_out": 56,
-        "kernel_size": 5,
+        "channels_out": 64,
+        "kernel_size": 3,
         "encoder_depth": 4,
     }
     train_unet(config, data_dir, run_dir)

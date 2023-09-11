@@ -91,3 +91,6 @@ target/
 
 # Emacs backups
 *~
+
+# Presentation images
+/reports/figures/

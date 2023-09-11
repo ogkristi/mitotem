@@ -4,7 +4,7 @@ from random import choice
 from typing import Any, Callable, Optional, Union, Tuple, List, Sequence
 import torch
 import torchvision.transforms.v2 as T
-import torchvision.transforms.v2.functional as F
+import torchvision.transforms.v2.functional as TF
 from torchvision import datapoints
 from torchvision.datasets import VisionDataset
 import cv2 as cv
@@ -12,6 +12,47 @@ import numpy as np
 from config.settings import *
 
 MITOSEM_CLASSES = ["background", "mitochondria"]
+
+
+class ForegroundCrop(T.Transform):
+    def __init__(self, minsize: Union[int, Sequence[int]]):
+        super().__init__()
+
+        self.minsize = minsize
+
+    def _get_params(self, flat_inputs: list[Any]) -> dict[str, Any]:
+        h, w = self.minsize, self.minsize
+        mask = flat_inputs[1]
+
+        y_max, x_max = mask.shape[-2:]
+        y_max, x_max = y_max - h, x_max - w
+
+        y_coord, x_coord = mask.nonzero(as_tuple=True)
+        # Center crop if mask is all background
+        if len(y_coord) == 0:
+            x0 = (x_max - w) // 2
+            y0 = (y_max - h) // 2
+            h_fg = h
+            w_fg = w
+        else:
+            x0, y0 = (torch.min(x_coord), torch.min(y_coord))
+            x1, y1 = (torch.max(x_coord), torch.max(y_coord))
+            h_fg = y1 - y0 + 1
+            w_fg = x1 - x0 + 1
+
+            # If foreground bbox is smalled than training patch (minsize),
+            # it is enlarged symmetrically to minsize
+            if h_fg < h:
+                y0 = torch.clip(y0 - (h - h_fg) // 2, 0, y_max)
+                h_fg = h
+            if w_fg < w:
+                x0 = torch.clip(x0 - (w - w_fg) // 2, 0, x_max)
+                w_fg = w
+
+        return dict(top=y0, left=x0, height=h_fg, width=w_fg)
+
+    def _transform(self, inpt: Any, params: dict[str, Any]) -> Any:
+        return TF.crop(inpt, **params)
 
 
 class CenterCropMask(T.Transform):
@@ -24,7 +65,7 @@ class CenterCropMask(T.Transform):
         if isinstance(inpt, datapoints.Image):
             return inpt
         else:
-            return F.center_crop(inpt, self.size)
+            return TF.center_crop(inpt, self.size)
 
 
 class TrivialAugmentWide(T.Transform):
@@ -34,27 +75,27 @@ class TrivialAugmentWide(T.Transform):
 
         self.aug_space = {
             "identity": lambda x, m: x,
-            "equalize": lambda x, m: F.equalize(x),
-            "autocontrast": lambda x, m: F.autocontrast(x),
-            "solarize": F.solarize,
-            "posterize": F.posterize,
-            "brightness": F.adjust_brightness,
-            "contrast": F.adjust_contrast,
-            "sharpness": F.adjust_sharpness,
-            "rotate": F.rotate,
-            "shear_x": lambda x, m: F.affine(
-                x, 0.0, [0, 0], 1.0, [0.0, m], F.InterpolationMode.BILINEAR
+            "equalize": lambda x, m: TF.equalize(x),
+            "autocontrast": lambda x, m: TF.autocontrast(x),
+            "solarize": TF.solarize,
+            "posterize": TF.posterize,
+            "brightness": TF.adjust_brightness,
+            "contrast": TF.adjust_contrast,
+            "sharpness": TF.adjust_sharpness,
+            "rotate": TF.rotate,
+            "shear_x": lambda x, m: TF.affine(
+                x, 0.0, [0, 0], 1.0, [0.0, m], TF.InterpolationMode.BILINEAR
             ),
-            "shear_y": lambda x, m: F.affine(
-                x, 0.0, [0, 0], 1.0, [m, 0.0], F.InterpolationMode.BILINEAR
+            "shear_y": lambda x, m: TF.affine(
+                x, 0.0, [0, 0], 1.0, [m, 0.0], TF.InterpolationMode.BILINEAR
             ),
-            "translate_x": lambda x, m: F.affine(
-                x, 0.0, [m, 0], 1.0, [0.0, 0.0], F.InterpolationMode.BILINEAR
+            "translate_x": lambda x, m: TF.affine(
+                x, 0.0, [m, 0], 1.0, [0.0, 0.0], TF.InterpolationMode.BILINEAR
             ),
-            "translate_y": lambda x, m: F.affine(
-                x, 0.0, [0, m], 1.0, [0.0, 0.0], F.InterpolationMode.BILINEAR
+            "translate_y": lambda x, m: TF.affine(
+                x, 0.0, [0, m], 1.0, [0.0, 0.0], TF.InterpolationMode.BILINEAR
             ),
-            "elastic": lambda x, m: T.ElasticTransform(m, 30.0)(x),
+            # "elastic": lambda x, m: T.ElasticTransform(m, 30.0)(x),
         }
 
         self.ranges = {
@@ -71,7 +112,7 @@ class TrivialAugmentWide(T.Transform):
             "shear_y": (0.0, 0.99 * 45),
             "translate_x": (0, 32),
             "translate_y": (0, 32),
-            "elastic": (0.0, 1500.0),
+            # "elastic": (0.0, 1500.0),
         }
 
     def _get_params(self, flat_inputs: list[Any]) -> dict[str, Any]:

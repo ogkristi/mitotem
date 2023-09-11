@@ -15,10 +15,46 @@ from ray import tune, air
 from ray.air import Checkpoint, session
 from ray.tune.schedulers import ASHAScheduler
 from src.models.unet import UNet, find_next_valid_size
-from src.data.loaders import load_data_mitosemseg
+from src.data.loaders import MitoSemsegDataset, TrivialAugmentWide, CenterCropMask
 
 
-def train_unet(config):
+def load_data(data_dir: str, input_size: int, output_size: int, split: float = 0.85):
+    tf_train = T.Compose(
+        [
+            T.RandomCrop(input_size),
+            TrivialAugmentWide(),
+            CenterCropMask(output_size),
+            T.ConvertDtype(torch.float32),
+            T.Normalize(mean=[MEAN], std=[STD]),
+        ]
+    )
+    tf_val = T.Compose(
+        [
+            T.ConvertDtype(torch.float32),
+            T.Normalize(mean=[MEAN], std=[STD]),
+        ]
+    )
+
+    bound = int(split * DATASET_SIZE)
+    gene = torch.Generator().manual_seed(33)
+    indices = torch.randperm(DATASET_SIZE, generator=gene).tolist()
+
+    train = MitoSemsegDataset(
+        root=data_dir, transforms=tf_train, weights=True, indices=indices[:bound]
+    )
+    val = MitoSemsegDataset(root=data_dir, transforms=tf_val, indices=indices[bound:])
+
+    return train, val
+
+
+def get_checkpoint():
+    checkpoint = session.get_checkpoint()
+    if checkpoint:
+        return checkpoint.to_dict()
+    return None
+
+
+def train_unet(config, data_dir):
     device = (
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     )
@@ -40,19 +76,18 @@ def train_unet(config):
         net.parameters(), config["lr"], weight_decay=config["weight_decay"]
     )
 
-    # mean is calculated after pixel-wise weighing
-    criterion = nn.CrossEntropyLoss(reduction="none").cuda(device)
-
-    checkpoint = session.get_checkpoint()
+    start_epoch = 1
+    checkpoint = get_checkpoint()
     if checkpoint:
-        checkpoint_state = checkpoint.to_dict()
-        start_epoch = checkpoint_state["epoch"]
-        net.load_state_dict(checkpoint_state["net_state_dict"])
-        optimizer.load_state_dict(checkpoint_state["optimizer_state_dict"])
-    else:
-        start_epoch = 1
+        print("Loading checkpoint")
+        start_epoch = checkpoint["epoch"]
+        net.load_state_dict(checkpoint["net"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
 
-    trainset, valset = load_data_mitosemseg(data_dir, input_size, split=0.85)
+    # mean is calculated after pixel-wise weighing
+    loss_fn = nn.CrossEntropyLoss(reduction="none").cuda(device)
+
+    trainset, valset = load_data(data_dir, input_size, output_size, split=0.84375)
 
     train_iter = DataLoader(
         trainset,
@@ -72,49 +107,46 @@ def train_unet(config):
     for epoch in range(start_epoch, 11):  # max epochs is 10
         net.train()
 
-        with torch.profiler.profile(
-            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                "/scratch/project_2008180/profiler"
-            ),
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=False,
-        ) as prof:
-            for i, (inputs, targets, weights) in enumerate(train_iter, 1):
-                targets = TF.center_crop(targets, output_size)
-                weights = TF.center_crop(weights, output_size)
-                inputs, targets, weights = (
-                    inputs.to(device),
-                    targets.to(device),
-                    weights.to(device),
-                )
+        # with torch.profiler.profile(
+        #     schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
+        #     on_trace_ready=torch.profiler.tensorboard_trace_handler(
+        #         "/scratch/project_2008180/profiler"
+        #     ),
+        #     record_shapes=True,
+        #     profile_memory=True,
+        #     with_stack=False,
+        # ) as prof:
+        # Training loop
+        for i, (inputs, targets, weights) in enumerate(train_iter, 1):
+            inputs, targets, weights = (
+                inputs.to(device),
+                targets.to(device),
+                weights.to(device),
+            )
 
-                optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=True)
 
-                outputs = net(inputs)
-                loss = ((1 + weights) * criterion(outputs, targets)).mean()
-                loss.backward()
-                optimizer.step()
+            outputs = net(inputs)
+            loss = ((1 + weights) * loss_fn(outputs, targets)).mean()
+            loss.backward()
+            optimizer.step()
 
-                prof.step()
+            # prof.step()
 
-        running_loss = 0.0
+        losses = []
         net.eval()
         for i, (inputs, targets) in enumerate(val_iter, 1):
             with torch.no_grad():
-                targets = TF.center_crop(targets, output_size)
                 inputs, targets = inputs.to(device), targets.to(device)
-
                 outputs = net(inputs)
-
-                loss = criterion(outputs, targets).mean()
-                running_loss += loss.item()
+                loss = loss_fn(outputs, targets).mean()
+                losses.append(loss)
+        loss = torch.stack(losses).mean().item()
 
         checkpoint_data = {
             "epoch": epoch,
-            "net_state_dict": net.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
+            "net": net.state_dict(),
+            "optimizer": optimizer.state_dict(),
         }
         checkpoint = Checkpoint.from_dict(checkpoint_data)
 
