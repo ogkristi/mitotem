@@ -1,0 +1,17 @@
+data:
+    train_root: /scratch/project_2008180/dataset
+    split: 0.85
+    patch_size: 512
+    batch_size: 2
+    num_workers: 1
+
+model:
+    encoder_weights: /projappl/project_2008180/mitotem/model/cem500k_mocov2_resnet50_200ep.pth.tar
+    num_classes: 2
+
+train:
+    run_dir: /scratch/project_2008180/train_resnet50unet
+    base_lr: 0.003
+    weight_decay: 0.1
+    max_epochs: 0
+    use_amp: true

@@ -1,0 +1,17 @@
+data:
+    train_root: data/processed
+    split: 0.85
+    patch_size: 512
+    batch_size: 1
+    num_workers: 1
+
+model:
+    encoder_weights: model/cem500k_mocov2_resnet50_200ep.pth.tar
+    num_classes: 2
+
+train:
+    run_dir: test/run
+    base_lr: 0.003
+    weight_decay: 0.1
+    max_epochs: 1
+    use_amp: false
